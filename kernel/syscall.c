@@ -89,6 +89,8 @@ extern uint64 sys_wait(void);
 extern uint64 sys_write(void);
 extern uint64 sys_uptime(void);
 extern uint64 sys_rename(void);
+extern uint64 sys_trace(void);
+extern uint64 sys_sysinfo(void);
 
 static uint64 (*syscalls[])(void) = {
     [SYS_fork] sys_fork,   [SYS_exit] sys_exit,     [SYS_wait] sys_wait,     [SYS_pipe] sys_pipe,
@@ -96,16 +98,61 @@ static uint64 (*syscalls[])(void) = {
     [SYS_chdir] sys_chdir, [SYS_dup] sys_dup,       [SYS_getpid] sys_getpid, [SYS_sbrk] sys_sbrk,
     [SYS_sleep] sys_sleep, [SYS_uptime] sys_uptime, [SYS_open] sys_open,     [SYS_write] sys_write,
     [SYS_mknod] sys_mknod, [SYS_unlink] sys_unlink, [SYS_link] sys_link,     [SYS_mkdir] sys_mkdir,
-    [SYS_close] sys_close, [SYS_rename] sys_rename,
+    [SYS_close] sys_close, [SYS_rename] sys_rename, [SYS_trace] sys_trace,   [SYS_sysinfo] sys_sysinfo 
 };
 
+char *syscallName(int num) {
+    static char *names[] = {
+        "",              // 0: 空
+        "sys_fork",     // 1
+        "sys_exit",     // 2
+        "sys_wait",     // 3
+        "sys_pipe",     // 4
+        "sys_read",     // 5
+        "sys_kill",     // 6
+        "sys_exec",     // 7
+        "sys_fstat",    // 8
+        "sys_chdir",    // 9
+        "sys_dup",      // 10
+        "sys_getpid",   // 11
+        "sys_sbrk",     // 12
+        "sys_sleep",    // 13
+        "sys_uptime",   // 14
+        "sys_open",     // 15
+        "sys_write",    // 16
+        "sys_mknod",    // 17
+        "sys_unlink",   // 18
+        "sys_link",     // 19
+        "sys_mkdir",    // 20
+        "sys_close",    // 21
+        "sys_rename",   // 22
+        "sys_trace",    // 23
+        "sys_sysinfo"   // 24
+    };
+    if (num > 0 && num < sizeof(names) / sizeof(names[0])) {
+        return names[num];
+    }
+    return "unknown";
+}
+
+// NELEM means numbers of elements in syscalls[].
 void syscall(void) {
   int num;
   struct proc *p = myproc();
 
   num = p->trapframe->a7;
   if (num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+    int arg0;
+    argint(0, &arg0);
+    // p->trapframe->a0 is the syscall return-value.
     p->trapframe->a0 = syscalls[num]();
+    // Get the syscall name.
+    char *name = syscallName(num);
+    if ((p->mask >> num) % 2 == 1)
+    {
+      printf("%d:%s(%d) -> %d\n", p->pid, name, arg0, p->trapframe->a0);
+    }
+    
   } else {
     printf("%d %s: unknown sys call %d\n", p->pid, p->name, num);
     p->trapframe->a0 = -1;
