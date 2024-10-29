@@ -6,6 +6,39 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
+
+uint64 sys_sysinfo(void) {
+  struct proc *p = myproc();
+   
+  // User pointer to struct sysinfo. 
+  uint64 usinfo;
+
+  // Kernel struct sysinfo.
+  struct sysinfo sinfo;
+
+  // Get the address of user pointer.
+  if ((argaddr(0, &usinfo)) < 0) return -1;
+  if(usinfo >= p->sz || usinfo + sizeof(sinfo) > p->sz) return -1;
+
+  // Fill kernel sysinfo with the free memory in bytes.
+  sinfo.freemem = gfreemem();
+
+  // Fill kernel sysinfo with the number of process.
+  sinfo.nproc = gfreeproc();
+
+  // Copy the struct from kernel to user.
+  if(copyout(p->pagetable, usinfo, (char *)&sinfo, sizeof(sinfo)) < 0) return -1;
+  return 0;
+}
+
+uint64 sys_trace(void) {
+  int n;
+  if (argint(0, &n) < 0) return -1;
+  struct proc *p = myproc();
+  p->mask = n;
+  return 0;
+}
 
 uint64 sys_exit(void) {
   int n;
