@@ -241,6 +241,10 @@ int fork(void) {
     release(&np->lock);
     return -1;
   }
+
+  // trace mask
+  np->mask = p->mask;
+
   np->sz = p->sz;
 
   np->parent = p;
@@ -618,4 +622,17 @@ void procdump(void) {
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// Get unused number of process.
+int gfreeproc(void) {
+  int nproc = 0;
+  struct proc *p;
+  // Travesal the process list.
+  for(p = proc; p < &proc[NPROC]; p++) {
+    if(p->state == UNUSED) {
+      nproc++;
+    }
+  }
+  return nproc;
 }
