@@ -379,3 +379,52 @@ int test_pagetable() {
   printf("test_pagetable: %d\n", satp != gsatp);
   return satp != gsatp;
 }
+
+void vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  vmprint_rec(pagetable, 0, 0);
+}
+
+void vmprint_rec(pagetable_t pagetable, int level, uint64 va) {
+  if (level > 2)
+    panic("vmprint_rec: invalid level");
+
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if (pte & PTE_V) {
+      uint64 child = PTE2PA(pte);
+      // 打印缩进
+      for (int l = 0; l < level; l++)
+        printf("||   ");
+      printf("||idx: %d: ", i);
+      if ((pte & (PTE_R | PTE_W | PTE_X)) != 0) {
+        // 叶子节点
+        uint64 va_start = va | ((uint64)i << (12 + 9 * (2 - level)));
+        uint64 pa = PTE2PA(pte);
+        printf("va: %p -> pa: %p, flags: ", (void *)va_start, (void *)pa);
+        // 打印权限位
+        char flags[5];
+        flags[0] = (pte & PTE_R) ? 'r' : '-';
+        flags[1] = (pte & PTE_W) ? 'w' : '-';
+        flags[2] = (pte & PTE_X) ? 'x' : '-';
+        flags[3] = (pte & PTE_U) ? 'u' : '-';
+        flags[4] = '\0';
+        printf("%s\n", flags);
+      } else {
+        // 非叶子节点
+        printf("pa: %p, flags: ", (void *)child);
+        // 打印权限位
+        char flags[5];
+        flags[0] = (pte & PTE_R) ? 'r' : '-';
+        flags[1] = (pte & PTE_W) ? 'w' : '-';
+        flags[2] = (pte & PTE_X) ? 'x' : '-';
+        flags[3] = (pte & PTE_U) ? 'u' : '-';
+        flags[4] = '\0';
+        printf("%s\n", flags);
+        // 递归遍历下一层页表
+        vmprint_rec((pagetable_t)child, level + 1,
+                    va | ((uint64)i << (12 + 9 * (2 - level))));
+      }
+    }
+  }
+}
