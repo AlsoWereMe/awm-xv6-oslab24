@@ -100,24 +100,20 @@ static struct proc *allocproc(void) {
 found:
   p->pid = allocpid();
 
-  p->state = UNUSED;          // 初始化进程状态为 EMBRYO
-  p->parent = 0;              // 初始化父进程指针
-  p->chan = 0;                // 初始化通道
-  p->killed = 0;              // 初始化 killed 状态
-  p->xstate = 0;              // 初始化退出状态
-  p->kstack = (uint64)kalloc(); // 为内核栈分配内存
-  if (p->kstack == 0) {       // 确保内核栈分配成功
-    release(&p->lock);
-    return 0;
-  }
+  p->state = UNUSED;            // 初始化进程状态为 UNUSED
+  p->parent = 0;                // 初始化父进程指针为NULL,即0
+  p->chan = 0;                  // 初始化通道
+  p->killed = 0;                // 初始化 killed 状态
+  p->xstate = 0;                // 初始化退出状态
+  p->kstack = (uint64)kalloc(); 
   
   // 初始化私有进程信息
-  p->sz = 0;                  // 进程内存大小初始化
-  p->pagetable = 0;           // 页表指针初始化
-  p->trapframe = 0;           // 陷阱帧初始化
+  p->sz = 0;                             // 进程内存大小初始化
+  p->pagetable = 0;                      // 页表指针初始化
+  p->trapframe = 0;                      // 陷阱帧初始化
   memset(p->ofile, 0, sizeof(p->ofile)); // 清空文件描述符数组
-  p->cwd = 0;                 // 当前目录初始化
-  memset(p->name, 0, sizeof(p->name)); // 清空进程名称
+  p->cwd = 0;                            // 当前目录初始化
+  memset(p->name, 0, sizeof(p->name));   // 清空进程名称
 
   // 初始化时间相关信息
   p->created_time = ticks;         
@@ -640,6 +636,7 @@ void wakeup(void *chan) {
 static void wakeup1(struct proc *p) {
   if (!holding(&p->lock)) panic("wakeup1");
   if (p->chan == p && p->state == SLEEPING) {
+    on_state_change(p->state, RUNNABLE, p);
     p->state = RUNNABLE;
   }
 }
@@ -765,6 +762,7 @@ int wait_sched(int *runable_time, int *running_time, int *sleep_time) {
       release(&p->lock);
       return -1;
     }
+
     sleep(p, &p->lock);
   }
 }
@@ -776,42 +774,19 @@ int on_state_change(int cur_state, int nxt_state, struct proc *p) {
     p->end = ticks;
     switch (cur_state) {
     case UNUSED:
-        if (nxt_state == RUNNABLE) {
-            p->runable_time = 0;
-        } else {
-            return -1;
-        }
+        p->runable_time = 0;
         break;
     case SLEEPING:
-        if (nxt_state == RUNNABLE) {
-            p->sleep_time += p->end - p->start;
-        } else {
-            return -1;
-        }
+        p->sleep_time += p->end - p->start;
         break;
     case RUNNABLE:
-        if (nxt_state == RUNNING) {
-            p->runable_time += p->end - p->start;
-        } else {
-            return -1;
-        }
+        p->runable_time += p->end - p->start;
         break;
     case RUNNING:
-        if (nxt_state == RUNNABLE) {
-            p->running_time += p->end - p->start;
-        } else if (nxt_state == ZOMBIE) {
-            p->running_time += p->end - p->start;
-            p->finish_time = p->end;
-        } else {
-            return -1;
-        }
+        p->running_time += p->end - p->start;
         break;
     case ZOMBIE:
-        if (nxt_state == UNUSED) {
-            p->created_time = p->end;
-        } else {
-            return -1;
-        }
+        p->created_time = p->end;
         break;
     default:
         return -1;
@@ -825,9 +800,8 @@ int on_state_change(int cur_state, int nxt_state, struct proc *p) {
 // -1 means error, 0 means success
 int set_priority(int priority, int pid) {
     if (priority < 0 || priority > 3) {
-        return -1; // 优先级范围错误
+        return -1;
     }
-
     struct proc *p;
     for (p = proc; p < &proc[NPROC]; p++) {
         acquire(&p->lock);
@@ -838,6 +812,6 @@ int set_priority(int priority, int pid) {
         }
         release(&p->lock);
     }
-    return -1; // 未找到指定的进程
+    return -1;
 }
 
