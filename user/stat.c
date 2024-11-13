@@ -72,7 +72,6 @@ int main(int argc, char *argv[]) {
 
         //  wait_sched(int *runable_time, int *running_time, int *sleep_time);
         int pid = wait_sched(&runable_time, &running_time, &sleep_time);  // 调用wait_sched获取统计信息
-
         if (pid >= 0) {
             printf("PID: %d | Runnable Time: %d ticks | Running Time: %d ticks | Sleep Time: %d ticks\n",
                    pid, runable_time, running_time, sleep_time);

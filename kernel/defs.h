@@ -117,6 +117,7 @@ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
 uint64          get_unused_procs(void);
 int             wait_sched(int *runable_time, int *running_time, int *sleep_time);
+int             on_stage_change(int cur_state, int nxt_state, struct proc *p);
 int             set_priority(int, int);
 
 // swtch.S

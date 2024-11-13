@@ -99,8 +99,34 @@ static struct proc *allocproc(void) {
 
 found:
   p->pid = allocpid();
+
+  p->state = UNUSED;          // 初始化进程状态为 EMBRYO
+  p->parent = 0;              // 初始化父进程指针
+  p->chan = 0;                // 初始化通道
+  p->killed = 0;              // 初始化 killed 状态
+  p->xstate = 0;              // 初始化退出状态
+  p->kstack = (uint64)kalloc(); // 为内核栈分配内存
+  if (p->kstack == 0) {       // 确保内核栈分配成功
+    release(&p->lock);
+    return 0;
+  }
   
-  // TODO: add A LOT OF init here
+  // 初始化私有进程信息
+  p->sz = 0;                  // 进程内存大小初始化
+  p->pagetable = 0;           // 页表指针初始化
+  p->trapframe = 0;           // 陷阱帧初始化
+  memset(p->ofile, 0, sizeof(p->ofile)); // 清空文件描述符数组
+  p->cwd = 0;                 // 当前目录初始化
+  memset(p->name, 0, sizeof(p->name)); // 清空进程名称
+
+  // 初始化时间相关信息
+  p->created_time = ticks;         
+  p->finish_time = 0;          
+  p->running_time = 0;         
+  p->runable_time = 0;         
+  p->sleep_time = 0;           
+  p->start = ticks;                
+  p->end = 0;   
 
   #ifdef PR
   p->priority = 2;
@@ -210,6 +236,7 @@ void userinit(void) {
   p->cwd = namei("/");
 
   // TODO: on state change
+  on_state_change(p->state, RUNNABLE, p);
   p->state = RUNNABLE;
 
   release(&p->lock);
@@ -271,6 +298,7 @@ int fork(void) {
   pid = np->pid;
 
   // TODO: on state change
+  on_state_change(np->state, RUNNABLE, np);
   np->state = RUNNABLE;
 
   release(&np->lock);
@@ -356,8 +384,8 @@ void exit(int status) {
   wakeup1(original_parent);
 
   // TODO: on state change
-
   p->xstate = status;
+  on_state_change(p->state, ZOMBIE, p);
   p->state = ZOMBIE;
 
   release(&original_parent->lock);
@@ -454,19 +482,48 @@ void scheduler(void) {
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
-
         found = 1;
       }
       release(&p->lock);
     }
     #elif defined PR
-    // Priority scheduling, iterating over max_p to find process with highest priority
+        struct proc *p_high = 0; // 用于记录最高优先级的进程
+        int highest_priority = 4; // 初始化为最低优先级+1
 
-    // First find the process with the highest priority and is RUNNABLE
-    
-    
-    // If found such max_p, copy to p, and run it.
-    
+        for (struct proc *p_iter = proc; p_iter < &proc[NPROC]; p_iter++) {
+            acquire(&p_iter->lock);
+            if (p_iter->state == RUNNABLE) {
+                if (p_iter->priority < highest_priority) {
+                    if (p_high != 0) {
+                        release(&p_high->lock);
+                    }
+                    highest_priority = p_iter->priority;
+                    p_high = p_iter;
+                } else {
+                    release(&p_iter->lock);
+                }
+            } else {
+                release(&p_iter->lock);
+            }
+        }
+
+        if (p_high != 0) {
+            // 找到了最高优先级的进程，进行调度
+            p = p_high;
+
+            // 进行状态转换
+            on_state_change(p->state, RUNNING, p);
+            p->state = RUNNING;
+            c->proc = p;
+
+            swtch(&c->context, &p->context);
+
+            // 进程运行完毕
+            c->proc = 0;
+            found = 1;
+
+            release(&p->lock);
+        }
     #endif
     // The same as Round-Robin, if no RUNNABLE process is found, we will wait for interrupt
     if (found == 0) {
@@ -503,7 +560,7 @@ void yield(void) {
   acquire(&p->lock);
 
   // TODO: on state change
-  
+  on_state_change(p->state, RUNNABLE, p);
   p->state = RUNNABLE;
   sched();
   release(&p->lock);
@@ -545,7 +602,7 @@ void sleep(void *chan, struct spinlock *lk) {
   }
 
   // TODO: on state change
-
+  on_state_change(p->state, SLEEPING, p);
   // Go to sleep.
   p->chan = chan;
   p->state = SLEEPING;
@@ -571,7 +628,7 @@ void wakeup(void *chan) {
     acquire(&p->lock);
     if (p->state == SLEEPING && p->chan == chan) {
       // TODO: on state change
-
+      on_state_change(p->state, RUNNABLE, p);
       p->state = RUNNABLE;
     }
     release(&p->lock);
@@ -597,12 +654,11 @@ int kill(int pid) {
     acquire(&p->lock);
     if (p->pid == pid) {
       p->killed = 1;
-      if (p->state == SLEEPING) {
-        // TODO: on state change
-
-        // Wake process from sleep().
+    // TODO: on state change
+    if (p->state == SLEEPING) {
+        on_state_change(p->state, RUNNABLE, p);
         p->state = RUNNABLE;
-      }
+    }
       release(&p->lock);
       return 0;
     }
@@ -673,16 +729,115 @@ uint64 get_unused_procs(void) {
 
 // get the running time, sleeping time, runnable time when the child process returns 
 int wait_sched(int *runable_time, int *running_time, int *sleep_time) {
+  struct proc *p = myproc();
+  struct proc *np;
+  int havekids, pid;
 
+  acquire(&p->lock);
+
+  for (;;) {
+    havekids = 0;
+    for (np = proc; np < &proc[NPROC]; np++) {
+      if (np->parent == p) {
+        havekids = 1;
+        acquire(&np->lock);
+        if (np->state == ZOMBIE) {
+          pid = np->pid;
+
+          // Copy the statistics from the child to the parent
+          if (copyout(p->pagetable, (uint64)runable_time, (char *)&np->runable_time, sizeof(int)) < 0 ||
+              copyout(p->pagetable, (uint64)running_time, (char *)&np->running_time, sizeof(int)) < 0 ||
+              copyout(p->pagetable, (uint64)sleep_time, (char *)&np->sleep_time, sizeof(int)) < 0) {
+            release(&np->lock);
+            release(&p->lock);
+            return -1;
+          }
+
+          freeproc(np);
+          release(&np->lock);
+          release(&p->lock);
+          return pid;
+        }
+        release(&np->lock);
+      }
+    }
+    if (!havekids || p->killed) {
+      release(&p->lock);
+      return -1;
+    }
+    sleep(p, &p->lock);
+  }
 }
+
+
 
 // UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE
 int on_state_change(int cur_state, int nxt_state, struct proc *p) {
-    
+    p->end = ticks;
+    switch (cur_state) {
+    case UNUSED:
+        if (nxt_state == RUNNABLE) {
+            p->runable_time = 0;
+        } else {
+            return -1;
+        }
+        break;
+    case SLEEPING:
+        if (nxt_state == RUNNABLE) {
+            p->sleep_time += p->end - p->start;
+        } else {
+            return -1;
+        }
+        break;
+    case RUNNABLE:
+        if (nxt_state == RUNNING) {
+            p->runable_time += p->end - p->start;
+        } else {
+            return -1;
+        }
+        break;
+    case RUNNING:
+        if (nxt_state == RUNNABLE) {
+            p->running_time += p->end - p->start;
+        } else if (nxt_state == ZOMBIE) {
+            p->running_time += p->end - p->start;
+            p->finish_time = p->end;
+        } else {
+            return -1;
+        }
+        break;
+    case ZOMBIE:
+        if (nxt_state == UNUSED) {
+            p->created_time = p->end;
+        } else {
+            return -1;
+        }
+        break;
+    default:
+        return -1;
+    }
+    p->start = p->end;
+    return 0;
 }
+
 
 // set priority [0-3] to a given process [pid]
 // -1 means error, 0 means success
 int set_priority(int priority, int pid) {
-    
+    if (priority < 0 || priority > 3) {
+        return -1; // 优先级范围错误
+    }
+
+    struct proc *p;
+    for (p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if (p->pid == pid) {
+            p->priority = priority;
+            release(&p->lock);
+            return 0; // 设置成功
+        }
+        release(&p->lock);
+    }
+    return -1; // 未找到指定的进程
 }
+
