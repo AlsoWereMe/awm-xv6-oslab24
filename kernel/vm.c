@@ -250,6 +250,14 @@ void uvmfree(pagetable_t pagetable, uint64 sz) {
   freewalk(pagetable);
 }
 
+// Free user memory pages,
+// then free page-table pages withou free physical.
+void puvmfree(pagetable_t pagetable, uint64 sz) {
+  if (sz > 0) uvmunmap(pagetable, 0, PGROUNDUP(sz) / PGSIZE, 0);
+  pfreewalk(pagetable);
+}
+
+
 // Given a parent process's page table, copy
 // its memory into a child's page table.
 // Copies both the page table and the
@@ -427,4 +435,42 @@ void vmprint_rec(pagetable_t pagetable, int level, uint64 va) {
       }
     }
   }
+}
+
+void pfreewalk(pagetable_t pagetable) {
+  // there are 2^9 = 512 PTEs in a page table.
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      pfreewalk((pagetable_t)child);
+      pagetable[i] = 0;
+    } else if (pte & PTE_V) {
+      panic("freewalk: leaf");
+    }
+  }
+}
+
+pagetable_t pkvminit() {
+  pagetable_t k_pagetable = (pagetable_t)kalloc();
+  memset(k_pagetable, 0, PGSIZE);
+
+  if (mappages(k_pagetable, UART0, PGSIZE, UART0, PTE_R | PTE_W) != 0) goto bad;
+
+  if (mappages(k_pagetable, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W) != 0) goto bad;
+
+  if (mappages(k_pagetable, PLIC, 0x400000, PLIC, PTE_R | PTE_W) != 0) goto bad;
+
+  if (mappages(k_pagetable, KERNBASE, (uint64)etext - KERNBASE, KERNBASE, PTE_R | PTE_X) != 0) goto bad;
+
+  if (mappages(k_pagetable, (uint64)etext, PHYSTOP - (uint64)etext, (uint64)etext, PTE_R | PTE_W) != 0) goto bad;
+
+  if (mappages(k_pagetable, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X) != 0) goto bad;
+
+  return k_pagetable;
+  
+bad:
+  pfreewalk(k_pagetable);
+  return 0;
 }

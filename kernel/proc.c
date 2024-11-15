@@ -20,6 +20,7 @@ static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 
 extern char trampoline[];  // trampoline.S
+extern pagetable_t kernel_pagetable; // vm.c
 
 // initialize the proc table at boot time.
 void procinit(void) {
@@ -37,6 +38,9 @@ void procinit(void) {
     uint64 va = KSTACK((int)(p - proc));
     kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
     p->kstack = va;
+    
+    // Copy the physical address to process' member.
+    p->kstack_pa = (uint64)pa;
   }
   kvminithart();
 }
@@ -111,6 +115,23 @@ found:
     return 0;
   }
 
+  // An copy of kernel pagetable.
+  p->k_pagetable = pkvminit();
+  if (p->k_pagetable == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // Map the kernel stack to pagetable.
+  if (mappages(p->k_pagetable, p->kstack, PGSIZE, p->kstack_pa, PTE_R | PTE_W) != 0) {
+    k_proc_freepagetable(p->k_pagetable, 0);
+    p->k_pagetable = 0;
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -127,6 +148,7 @@ static void freeproc(struct proc *p) {
   if (p->trapframe) kfree((void *)p->trapframe);
   p->trapframe = 0;
   if (p->pagetable) proc_freepagetable(p->pagetable, p->sz);
+  if (p->k_pagetable) k_proc_freepagetable(p->k_pagetable, p->sz);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -172,6 +194,13 @@ void proc_freepagetable(pagetable_t pagetable, uint64 sz) {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
+}
+
+// Free a process's page table but don's free the physical memory it refers to.
+void k_proc_freepagetable(pagetable_t pagetable, uint64 sz) {
+  uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+  uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  puvmfree(pagetable, sz);
 }
 
 // a user program that calls exec("/init")
@@ -430,7 +459,16 @@ void scheduler(void) {
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        w_satp(MAKE_SATP(p->k_pagetable));
+        sfence_vma();
+
+        int intena = mycpu()->intena;
         swtch(&c->context, &p->context);
+        mycpu()->intena = intena;
+
+        w_satp(MAKE_SATP(kernel_pagetable));
+        sfence_vma();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
@@ -442,6 +480,8 @@ void scheduler(void) {
     }
 #if !defined(LAB_FS)
     if (found == 0) {
+      w_satp(MAKE_SATP(kernel_pagetable));
+      sfence_vma();
       intr_on();
       asm volatile("wfi");
     }

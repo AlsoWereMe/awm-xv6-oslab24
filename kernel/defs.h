@@ -108,6 +108,8 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
+void            k_proc_freepagetable(pagetable_t, uint64);
+void            puvmfree(pagetable_t, uint64);
 
 // swtch.S
 void            swtch(struct context*, struct context*);
@@ -181,6 +183,8 @@ int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             test_pagetable();
 void            vmprint(pagetable_t);
 void            vmprint_rec(pagetable_t, int, uint64);
+pagetable_t     pkvminit(void);
+void            pfreewalk(pagetable_t);
 
 // plic.c
 void            plicinit(void);

@@ -105,6 +105,6 @@ struct proc {
   char name[16];               // Process name (debugging)
 
   // New member
-  pagetable_t k_pagetable;
-  uint64 kstack_pa; 
+  pagetable_t k_pagetable;    // Process physical pagetable.
+  uint64 kstack_pa;           // Process physical stack.
 };
