@@ -123,14 +123,8 @@ found:
     return 0;
   }
 
-  // Map the kernel stack to pagetable.
-  if (mappages(p->k_pagetable, p->kstack, PGSIZE, p->kstack_pa, PTE_R | PTE_W) != 0) {
-    k_proc_freepagetable(p->k_pagetable, 0);
-    p->k_pagetable = 0;
-    freeproc(p);
-    release(&p->lock);
-    return 0;
-  }
+  // Map the kernel stack of process to its own kernel pagetable.
+  pkvmmap(p->k_pagetable, p->kstack, p->kstack_pa, PGSIZE, PTE_R | PTE_W);
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -148,7 +142,7 @@ static void freeproc(struct proc *p) {
   if (p->trapframe) kfree((void *)p->trapframe);
   p->trapframe = 0;
   if (p->pagetable) proc_freepagetable(p->pagetable, p->sz);
-  if (p->k_pagetable) k_proc_freepagetable(p->k_pagetable, p->sz);
+  if (p->k_pagetable) pfreewalk(p->k_pagetable);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -196,13 +190,6 @@ void proc_freepagetable(pagetable_t pagetable, uint64 sz) {
   uvmfree(pagetable, sz);
 }
 
-// Free a process's page table but don's free the physical memory it refers to.
-void k_proc_freepagetable(pagetable_t pagetable, uint64 sz) {
-  uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-  uvmunmap(pagetable, TRAPFRAME, 1, 0);
-  puvmfree(pagetable, sz);
-}
-
 // a user program that calls exec("/init")
 // od -t xC initcode
 uchar initcode[] = {0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x45, 0x02, 0x97, 0x05, 0x00, 0x00, 0x93,
@@ -221,6 +208,8 @@ void userinit(void) {
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+
+  syncpt(p->pagetable, p->k_pagetable, 0, p->sz);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -245,8 +234,10 @@ int growproc(int n) {
     if ((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    syncpt(p->pagetable, p->k_pagetable, p->sz, p->sz + n);
   } else if (n < 0) {
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    kuvmdealloc(p->k_pagetable, p->sz, p->sz + n);
   }
   p->sz = sz;
   return 0;
@@ -290,6 +281,8 @@ int fork(void) {
   pid = np->pid;
 
   np->state = RUNNABLE;
+
+  syncpt(np->pagetable, np->k_pagetable, 0, np->sz);
 
   release(&np->lock);
 
@@ -460,28 +453,19 @@ void scheduler(void) {
         p->state = RUNNING;
         c->proc = p;
 
-        w_satp(MAKE_SATP(p->k_pagetable));
-        sfence_vma();
-
-        int intena = mycpu()->intena;
+        pkvminithart(p->k_pagetable);
         swtch(&c->context, &p->context);
-        mycpu()->intena = intena;
-
-        w_satp(MAKE_SATP(kernel_pagetable));
-        sfence_vma();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
-
+        kvminithart();
         found = 1;
       }
       release(&p->lock);
     }
 #if !defined(LAB_FS)
     if (found == 0) {
-      w_satp(MAKE_SATP(kernel_pagetable));
-      sfence_vma();
       intr_on();
       asm volatile("wfi");
     }

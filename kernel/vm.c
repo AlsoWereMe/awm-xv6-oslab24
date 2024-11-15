@@ -437,21 +437,6 @@ void vmprint_rec(pagetable_t pagetable, int level, uint64 va) {
   }
 }
 
-void pfreewalk(pagetable_t pagetable) {
-  // there are 2^9 = 512 PTEs in a page table.
-  for (int i = 0; i < 512; i++) {
-    pte_t pte = pagetable[i];
-    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
-      // this PTE points to a lower-level page table.
-      uint64 child = PTE2PA(pte);
-      pfreewalk((pagetable_t)child);
-      pagetable[i] = 0;
-    } else if (pte & PTE_V) {
-      panic("freewalk: leaf");
-    }
-  }
-}
-
 pagetable_t pkvminit() {
   pagetable_t k_pagetable = (pagetable_t)kalloc();
   memset(k_pagetable, 0, PGSIZE);
@@ -473,4 +458,64 @@ pagetable_t pkvminit() {
 bad:
   pfreewalk(k_pagetable);
   return 0;
+}
+
+void pkvminithart(pagetable_t k_pagetable) {
+  w_satp(MAKE_SATP(k_pagetable));
+  sfence_vma();
+}
+
+void pkvmmap(pagetable_t k_pagetable, uint64 va, uint64 pa, uint64 sz, int perm) {
+  if (mappages(k_pagetable, va, sz, pa, perm) != 0) {
+    panic("kvmmap");
+  }
+}
+
+void pfreewalk(pagetable_t pagetable) {
+  // there are 2^9 = 512 PTEs in a page table.
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      freewalk((pagetable_t)child);
+      pagetable[i] = 0;
+    } 
+    pagetable[i] = 0;
+  }
+  kfree((void *)pagetable);
+}
+
+uint64 syncpt(pagetable_t old, pagetable_t new, uint64 sz, uint64 sz_n) {
+  pte_t* pte;
+  uint64 pa, i;
+  uint flags;
+  sz = PGROUNDUP(sz);
+  for (i = sz; i < sz_n; i += PGSIZE) {
+    if ((pte = walk(old, i, 0)) == 0) {
+      panic("sync_pagetable:pte should exist");
+    }
+    if ((*pte & PTE_V) == 0) {
+        panic("sync_pagetable:page not present");
+    }
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte) & (~PTE_U);
+    if (mappages(new, i, PGSIZE, (uint64)pa, flags) != 0) {
+      goto err;
+    }
+  }
+  return 0;
+
+err:
+  uvmunmap(new, 0, i / PGSIZE, 0);
+  return -1;
+}
+
+uint64 kuvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz) {
+  if (newsz >= oldsz) return oldsz;
+  if (PGROUNDUP(newsz) < PGROUNDUP(oldsz)) {
+    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 0);
+  }
+  return newsz;
 }
