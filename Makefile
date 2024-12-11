@@ -321,7 +321,7 @@ grade:
 ## FOR web handin
 ##
 diff:
-	git diff origin/fs HEAD > commit.patch
+	git diff up/fs HEAD > commit.patch
 
 submit-check:
 
